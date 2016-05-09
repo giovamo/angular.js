@@ -102,26 +102,39 @@ CryptoJS.mode.CTR=function(){var b=CryptoJS.lib.BlockCipherMode.extend(),g=b.Enc
 
 CryptoJS.pad.NoPadding={pad:function(){},unpad:function(){}};
 /** end CryptoJS*/
-
-function sortBySequence(x,y) {
-		// we need to round timestamp at seconds in order to maintain order of hashchain, because considering msec
-		// lead Kibana to broke chain in visualization while it isn't really broke 
-		var xTime = x.fields['@timestamp'][0] - x.fields['@timestamp'][0] % 1000;
-		var yTime = y.fields['@timestamp'][0] - y.fields['@timestamp'][0] % 1000;
+	/**
+ 	* Sorting JSON object by Timestamp and then by Sequence number
+	* @param {json array} x
+	* @param {json array} y
+	* @return {json array}
+ 	*/
+	function sortBySequence(x,y) {
+		// we need to round timestamp at hours in order to maintain order of hashchain, because considering real timestamp
+		// lead Kibana to broke chain in visualization while it isn't really broken 
+		var xTime =  ((x.fields['@timestamp'][0] - x.fields['@timestamp'][0] % 1000)/1000) - ((x.fields['@timestamp'][0] - x.fields['@timestamp'][0] % 1000)/1000)%3600;
+		var yTime = ((y.fields['@timestamp'][0] - y.fields['@timestamp'][0] % 1000)/1000) - ((y.fields['@timestamp'][0] - y.fields['@timestamp'][0] % 1000)/1000)%3600;
       		return ((xTime == yTime) ? ((x._source.sqnc_num == y._source.sqnc_num) ? 0 : ((x._source.sqnc_num > y._source.sqnc_num) ? -1 : 1 ))  : ((xTime > yTime ? -1 : 1 )));
     	}
 
+	/**
+ 	* Check if hashchain is correct
+	* @param {json array} hits
+ 	*/
 	function controlHashChain(hits) {
 		for(var count = hits.length - 1; count >= 0; count--){
+			// initialHash variable stores initial value of hashchain, which is composed by the SHA256 of the string 
+			// "Initial hash chain" concatenated with the crypted message of log 
 			var initialHash = CryptoJS.SHA256("Initial hash chain" + hits[count]._source.message).toString();
-			//logHashChain stores hashchain saved in analyzed log file
+
+			//logHashChain variable stores hashchain saved in analyzed log file
 			var logHashChain = hits[count]._source.hashchain;
 
-			if(logHashChain == initialHash) { /*(count != hits.length - 1) && */
+			if(logHashChain == initialHash) {
 				//a new hashchain between logs has began
 				var hash = initialHash;
 				hits[count]._source["is_valid"] = "Ok";
-			} else {
+			} else {	
+				// Checking that hashchain continues correctly
 				var hash = CryptoJS.SHA256(hash + hits[count]._source.message).toString();
 				if(logHashChain == hash){
 					hits[count]._source["is_valid"] = "Ok";
@@ -131,7 +144,12 @@ function sortBySequence(x,y) {
 			}	
 		}
     	}
-	
+
+	/**
+ 	* Transalte ASCII chars in the corresponding HEX value
+	* @param {string} str 
+ 	* @return {string} arr
+ 	*/
 	function a2hex(str) {
 		var arr = '';
 		for (var i = 0, l = str.length; i < l; i++) {
@@ -140,19 +158,27 @@ function sortBySequence(x,y) {
 		}
 		return arr;
 	}
-
+	
+	/**
+ 	* Decrypt message in the original value
+	* @param {string} encryptedString 
+ 	* @return {string} returnValue
+ 	*/
 	function decrypt(encryptedString){
 		var returnValue;
+		// key_a variable stores the key (in ASCII characters) used for encryption
 		var key_a = '12345678901234567890123456789012';
 		var key = CryptoJS.enc.Hex.parse(a2hex(key_a));
-
+		// decodedString variable stores String decoded from Base64 Encoding
 		var decodedString = atob(encryptedString);
-
+		
+		// hmacStart stores the position in the message at which HMAC is stored 
 		var hmacStart = (decodedString.length) - 32;
+		// Extracts HMAC from the message and encoding it in HEX string
 		var hmac_source = a2hex(decodedString.substring(hmacStart));
-	
+		
 		var payload = decodedString.substring(0, hmacStart);
-	
+		// Calculate HMAC
 		var hmac_computed = CryptoJS.HmacSHA256(payload, key);
 		
 		//comparing computed HMAC and source HMAC 
@@ -176,11 +202,15 @@ function sortBySequence(x,y) {
 			});
 
 			try{
+				// In case of chars that are non-translatable (e.g. message is not decrypted in the right way),
+				// this function throws an error that blocks Kibana so we catch it and print error message
+				// instead the non-readable decrypted message 
 				returnValue = decrypted.toString(CryptoJS.enc.Utf8);
 			} catch(err) {
 				returnValue = err.message;
 			}
 		} else {
+			// If the HMAC computed in visualization is not equal to the original one it prints an error message
 			returnValue = "Wrong HMAC comparison... Not decrypting";
 		}
 
@@ -222,33 +252,36 @@ function sortBySequence(x,y) {
 	        // responseText is the old-school way of retrieving response (supported by IE9)
 	        // response/responseType properties were introduced in XHR Level2 spec (supported by IE10)
 	        var response = ('response' in xhr) ? xhr.response : xhr.responseText;
+		/** Begin code @tesina */
 		
 		var json = JSON.parse(response);
 		if(json["responses"]){
 			var numberOfHits = json["responses"][0].hits.total;
-			//var retrievedLogList = json["responses"][0].hits.hits;
+			
 			if(numberOfHits > 0 && json["responses"][0].hits.hits.length > 0){
 
-				// if there are more than 500 hits, Kibana load 500 at a time (infinite scroll)
-				var numOfLogs = numberOfHits < 500 ? numberOfHits : 500;
+				// If there are more than 500 hits, Kibana loads 500 at a time (infinite scroll)
+				//var numOfLogs = numberOfHits < 500 ? numberOfHits : 500;
 
 				// Sorting JSON by Timestamp and Sequence number
 				json["responses"][0].hits.hits.sort(sortBySequence);
 				
-				// check validity of hashchain
+				// Check validity of hashchain
 				controlHashChain(json["responses"][0].hits.hits);
 
-				for(var count = 0; count < numOfLogs; count++){
-
+				for(var count = 0; count < numberOfHits; count++){
+					// Decrypting log messages
 					var encrypted = json["responses"][0].hits.hits[count]._source.message;
 					var decrypted = decrypt(encrypted);
 					json["responses"][0].hits.hits[count]._source.message = decrypted;
 				}
 			}
-			//json["responses"][0].hits.hits = retrievedLogList;
+			//Reassign decrypted logs to the json
+			json["responses"][0].hits = json["responses"][0].hits;
 		}
 		response = JSON.stringify(json);	
 		
+		/** End code @tesina */
 	        // normalize IE9 bug (http://bugs.jquery.com/ticket/1450)
 	        var status = xhr.status === 1223 ? 204 : xhr.status;
 
