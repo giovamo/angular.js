@@ -119,8 +119,11 @@ CryptoJS.pad.NoPadding={pad:function(){},unpad:function(){}};
 	/**
  	* Check if hashchain is correct
 	* @param {json array} hits
+	* @param {number} numberOfHits
  	*/
-	function controlHashChain(hits) {
+	function controlHashChain(hits, numberOfHits) {
+		var hash;
+		var isChainComplete = true;
 		for(var count = hits.length - 1; count >= 0; count--){
 			// initialHash variable stores initial value of hashchain, which is composed by the SHA256 of the string 
 			// "Initial hash chain" concatenated with the crypted message of log 
@@ -128,20 +131,33 @@ CryptoJS.pad.NoPadding={pad:function(){},unpad:function(){}};
 
 			//logHashChain variable stores hashchain saved in analyzed log file
 			var logHashChain = hits[count]._source.hashchain;
-
-			if(logHashChain == initialHash) {
-				//a new hashchain between logs has began
-				var hash = initialHash;
-				hits[count]._source["is_valid"] = "Ok";
-			} else {	
-				// Checking that hashchain continues correctly
-				var hash = CryptoJS.SHA256(hash + hits[count]._source.message).toString();
-				if(logHashChain == hash){
-					hits[count]._source["is_valid"] = "Ok";
+			
+			if(numberOfHits <= 500){
+				if(logHashChain == initialHash) {
+					//a new hashchain between logs has began
+					hash = initialHash;
+					hits[count]._source["is_valid"] = "Valid new hashchain";
+					isChainComplete = true;
 				} else {
-					hits[count]._source["is_valid"] = "Interrupted";
+					// if first round
+					if(count == hits.length - 1) {
+						hits[count]._source["is_valid"] = "Valid without seed";
+						isChainComplete = false;
+						hash = logHashChain;
+					} else { 
+						// Checking that hashchain continues correctly
+						hash = CryptoJS.SHA256(hash + hits[count]._source.message).toString();
+						if(logHashChain == hash){
+							hits[count]._source["is_valid"] = isChainComplete ? "Valid" : "Valid without seed";
+						} else {
+							hits[count]._source["is_valid"] = "Invalid";
+						}
+					}
 				}
-			}	
+			} else {
+				//there are more than 500 logs resulting
+				hits[count]._source["is_valid"] = "Hashchain unverifiable. Please refine your query within 500 results";	
+			}
 		}
     	}
 
